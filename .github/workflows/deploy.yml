@@ -1,0 +1,58 @@
+name: Build and Deploy to ECS
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Login to ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Run tests and lint
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    - name: Install and run backend tests
+      run: |
+        cd backend
+        npm ci
+        npm test
+        npm run lint
+
+
+    - name: Build, tag, and push image
+      env:
+        AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        AWS_REGION: ${{ secrets.AWS_REGION }}
+        ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      run: |
+        IMAGE_TAG=${{ github.sha }}
+        docker build -t ${ECR_REPOSITORY}:${IMAGE_TAG} backend
+        docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}
+        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}
+
+    - name: Render ECS task definition
+      id: render
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: backend/ecs-task-def.json
+        container-name: backend
+        image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+
+    - name: Deploy to ECS
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.render.outputs.task-definition }}
+        service: ${{ secrets.ECS_SERVICE }}
+        cluster: ${{ secrets.ECS_CLUSTER }}
+        wait-for-service-stability: true
